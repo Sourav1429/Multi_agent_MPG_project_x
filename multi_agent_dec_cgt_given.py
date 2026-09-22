@@ -118,6 +118,7 @@ class project_x_dec_tabular:
 
         self.individual_vf = {}
         self.Cf = []
+        self.pot=[]
         self.history = []
 
     def get_joint_policy(self):
@@ -243,6 +244,7 @@ class project_x_dec_tabular:
 
         J_rewards = np.zeros(self.M, dtype=float)
         J_cost = 0.0
+        J_pot = 0.0
 
         for _ in range(self.n_samples):
             state = 0
@@ -254,11 +256,12 @@ class project_x_dec_tabular:
                     for i in range(self.M)
                 ]
 
-                next_state, rewards, cost, _, done = self.env.step(actions)
+                next_state, rewards, cost, potential, done = self.env.step(actions)
                 discount = self.gamma ** t
 
                 J_rewards += discount * np.asarray(rewards, dtype=float)
                 J_cost += discount * float(cost)
+                J_pot += discount*float(potential)
 
                 state = int(next_state)
                 if done:
@@ -266,7 +269,8 @@ class project_x_dec_tabular:
 
         J_rewards /= self.n_samples
         J_cost /= self.n_samples
-        return J_rewards, J_cost
+        J_pot /= self.n_samples
+        return J_rewards, J_cost,J_pot
 
     def policy_gradient(self, Pi, agent_idx, objective="reward"):
         """
@@ -359,6 +363,7 @@ class project_x_dec_tabular:
 
         J_rewards = np.zeros(self.M, dtype=float)
         J_cost = 0.0
+        J_pot = 0.0
 
         g_reward = np.zeros(
             (self.M, self.nS, self.nA),
@@ -366,6 +371,11 @@ class project_x_dec_tabular:
         )
 
         g_cost = np.zeros(
+            (self.M, self.nS, self.nA),
+            dtype=float
+        )
+
+        g_potential = np.zeros(
             (self.M, self.nS, self.nA),
             dtype=float
         )
@@ -385,6 +395,7 @@ class project_x_dec_tabular:
             trajectory_actions = []
             trajectory_rewards = []
             trajectory_costs = []
+            trajectory_potential = []
 
             # ---------------------------------------------------------
             # Generate one trajectory
@@ -401,7 +412,7 @@ class project_x_dec_tabular:
                     for i in range(self.M)
                 ]
 
-                next_state, rewards, cost, _, done = self.env.step(actions)
+                next_state, rewards, cost, potential, done = self.env.step(actions)
 
                 trajectory_states.append(current_state)
                 trajectory_actions.append(actions)
@@ -409,6 +420,7 @@ class project_x_dec_tabular:
                     np.asarray(rewards, dtype=float)
                 )
                 trajectory_costs.append(float(cost))
+                trajectory_potential.append(float(potential))
 
                 state = int(next_state)
 
@@ -432,6 +444,11 @@ class project_x_dec_tabular:
                 dtype=float
             )
 
+            potential_returns = np.zeros(
+                H,
+                dtype=float
+            )
+
             running_reward = np.zeros(self.M, dtype=float)
             running_cost = 0.0
 
@@ -447,8 +464,14 @@ class project_x_dec_tabular:
                     + self.gamma * running_cost
                 )
 
+                # running_potential = (
+                #     trajectory_potential[t]
+                #     + self.gamma * running_cost
+                # )
+
                 reward_returns[t] = running_reward
                 cost_returns[t] = running_cost
+                # potential_returns[t] = running_potential
 
             # ---------------------------------------------------------
             # Objective estimates
@@ -465,6 +488,10 @@ class project_x_dec_tabular:
 
                 J_cost += (
                     discount * trajectory_costs[t]
+                )
+
+                J_pot += (
+                    discount * trajectory_potential[t]
                 )
 
             # ---------------------------------------------------------
@@ -491,6 +518,7 @@ class project_x_dec_tabular:
                     # Monte Carlo return-to-go
                     G_reward = reward_returns[t, i]
                     G_cost = cost_returns[t]
+                    # G_potential = potential_returns[t]
 
                     g_reward[i, state_t, a_i] += (
                         discount
@@ -504,6 +532,12 @@ class project_x_dec_tabular:
                         * G_cost
                     )
 
+                    # g_potential[i, state_t, a_i] += (
+                    #     discount
+                    #     * score
+                    #     * G_potential
+                    # )
+
         # -------------------------------------------------------------
         # Average over Monte Carlo trajectories
         # -------------------------------------------------------------
@@ -513,11 +547,14 @@ class project_x_dec_tabular:
         g_reward /= self.n_samples
         g_cost /= self.n_samples
 
+        J_potential /= self.nsamples
+
         return (
             J_rewards,
             J_cost,
             g_reward,
-            g_cost
+            g_cost,
+            J_potential
         )
 
     def run_algo(self):
@@ -533,7 +570,7 @@ class project_x_dec_tabular:
             #         print(f"Agent {i}:")
             #         print(Pi[i])
                     
-            J_rewards, J_cost, g_reward, g_cost = self.estimate_all(Pi)
+            J_rewards, J_cost, g_reward, g_cost,J_pot = self.estimate_all(Pi)
 
             # Line 9: g_(2,i) = g_(1,i) - lambda*sigma(...)*g_hat_(2,i).
             sigmoid_value = float(
@@ -560,9 +597,11 @@ class project_x_dec_tabular:
                 self.agent_list[i].policy = Pi[i].copy()
 
             self.Cf.append(J_cost)
+            self.pot.append(J_pot)
             self.history.append({
                 "iteration": t + 1,
                 "J_cost": J_cost,
+                "J_pot": J_pot,
                 "sigmoid": sigmoid_value,
                 **{
                     f"J_reward_{i}": J_rewards[i]
@@ -573,6 +612,7 @@ class project_x_dec_tabular:
             print(
                 f"Iteration {t + 1:4d}/{self.args.T} | "
                 f"Jc = {J_cost: .6f} | "
+                f"Jpot = {J_pot: .6f} | "
                 f"sigma = {sigmoid_value: .6f}"
                 f"J_reward_1 = {J_rewards[0]}: .6f"
                 f"J_reward_2 = {J_rewards[1]:.6f}"
@@ -583,6 +623,7 @@ class project_x_dec_tabular:
             for i in range(self.M)
         ]
         self.individual_vf["cost"] = self.Cf
+        self.individual_vf["pot"] = self.pot
 
         self.save_results()
         return Pi
